@@ -1,0 +1,113 @@
+---
+title: "Earthquakes"
+author: "Samuel Richards"
+date: "2023-03-22"
+output:
+  # pdf_document:
+  #   keep_tex: TRUE
+  html_document:
+    toc: yes
+    toc_float: yes
+    code_folding: hide
+    number_sections: no
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(leaflet)
+library(lubridate)
+library(plotly)
+library(caret)
+library(scales)
+```
+
+```{r}
+#read the data and create a new variable to be able to select annual timepoints while preserving the original timestamp
+eq <- read.csv("C:/Users/Samuel/OneDrive - West Chester University of PA/STA 610/R Examples/earthquakes.csv") %>% 
+  mutate(timestamp = ymd_hms(time)) %>% 
+  arrange(timestamp) %>% 
+  mutate(ts = round(timestamp, units = "year"))
+
+
+#subsets the data to include only the highest magnitude earthquake for each year (plus the most recent before the big one)
+yearly <- eq %>% group_by(ts) %>% 
+  slice_max(mag) %>% 
+  distinct(mag,.keep_all = T) %>% 
+  rbind(eq[3158,]) %>% 
+  arrange(timestamp)
+
+```
+
+## Plot of Earthquakes
+
+The highest magnitude earthquake each year from 1965 - 2011
+
+```{r}
+#Plot of the earthquakes
+leaflet(yearly) %>% 
+  addTiles() %>% 
+  addCircleMarkers(lng = ~longitude,
+                   lat = ~latitude,
+                   radius = ~(exp(mag))^(1/3),
+                   stroke = F,
+                   fillOpacity = .5,
+                   color = ~ifelse(yearly$mag > 9, "darkred", "darkblue"),
+                   popup = ~as.character(paste0("<br><strong>Date and Time: </strong>", timestamp,
+                                                "<br><strong>Magnitude: </strong>", mag)
+                                         )
+  )
+```
+
+
+## Data Preprocessing
+
+```{r}
+eq <- eq[c(3:3159),] #I only need the data up to that last point (for now) and only entire years up to then
+
+#If I want to subset by the same geographic area as the book
+#eq <- eq[which(eq$latitude > 37.72 & eq$latitude < 38.82 & eq$longitude > 141.87 & eq$longitude < 142.87),]
+
+#Fine-tuning the geographic area os the model...
+eq <- eq[which(eq$latitude > 35.72 & eq$latitude < 40.82 & eq$longitude > 139.37 & eq$longitude < 143.37),]
+
+eq <- eq[-as.numeric(count(eq)),] #to omit the 9.1
+
+#---data frame of magnitudes (rounded to .1) and relative frequencies
+gg <- data.frame(table(round(eq$mag, 1)) ) %>% 
+  rename(mag = Var1,
+         freq = Freq)
+
+gg$mag <- as.numeric(as.character(gg$mag)) #change to numeric rather than factors
+
+
+
+gg$freq <- gg$freq/(2011-1965) #AVERAGE annual frequencies over the 46-year span
+
+
+#creates a new variable representing the frequency of earthquakes of AT LEAST that magnitude
+for(i in 1:as.numeric(count(gg))){
+  gg$freqc[i] <- sum( gg$freq[c(i:as.numeric(count(gg)))] )
+}
+
+```
+
+
+## Frequency of Earthquakes
+Relative to Magnitude
+
+```{r}
+#---frequencies of each magnitude
+ggplot(gg, aes(x = mag, y = freqc)) +
+  geom_point(size = 4, shape = 17 )
+  
+#---frequencies on the logistic scale
+ggplot(gg, aes(x = mag, y = freqc)) +
+  geom_point(size = 4, shape = 17 ) +
+  scale_y_log10() +
+  scale_x_log10() +
+  stat_smooth(method = lm,
+              formula = y ~ poly(x,1))
+  
+```
+
