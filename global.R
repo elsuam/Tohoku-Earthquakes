@@ -6,10 +6,12 @@ library(leaflegend)
 library(plotly)
 library(fontawesome)
 library(emojifont)
+library(caret)
+library(brnn)
 
 
 #read the data and create a new variable to be able to select annual timepoints while preserving the original timestamp
-eq <- read.csv("C:/Users/Samuel/OneDrive - West Chester University of PA/STA 610/R Examples/Tohoku-Earthquakes/earthquakes.csv") %>% 
+eq <- read.csv("data/earthquakes.csv") %>% 
   mutate(timestamp = ymd_hms(time)) %>% 
   arrange(timestamp) %>% 
   mutate(year = year(timestamp))
@@ -21,6 +23,7 @@ yearly <- eq %>% group_by(year) %>%
   distinct(year,.keep_all = T) %>% 
   rbind(eq[3158,]) %>% 
   arrange(timestamp)
+yearly <- yearly[c(2:49),]
 
 
 #yearly$time <- yearly$time %>% ymd_hms() %>% year()
@@ -28,7 +31,6 @@ yearly <- eq %>% group_by(year) %>%
 
 date_start <- min(yearly$year)
 date_end <- max(yearly$year)
-
 
 
 #-----just keep for testing for now...---
@@ -51,7 +53,6 @@ gg <- data.frame(table(round(eq$mag, 1)) ) %>%
 gg$mag <- as.numeric(as.character(gg$mag)) #change to numeric rather than factors
 
 
-
 gg$freq <- gg$freq/(2011-1965) #AVERAGE annual frequencies over the 46-year span
 
 
@@ -60,4 +61,28 @@ for(i in 1:as.numeric(count(gg))){
   gg$freqc[i] <- sum( gg$freq[c(i:as.numeric(count(gg)))] )
 }
 #------------------------------------------------------
+
+
+#-----Linear model prerequisites-----
+gg_log <- gg %>%                             #transforming to the log scale
+  mutate(freqc = log10(freqc))
+
+fitControl <- trainControl(method = "cv", number = 10) # 10-fold cross-validation
+#-----------------------------------
+
+
+
+#-----Neural network prerequisites-----
+gg_net <- gg
+x <- gg_net$mag
+y <- gg_net$freqc
+bnn <- brnn(y~x,neurons=6)
+#--------------------------------------
+
+
+
+
+
+
+
 

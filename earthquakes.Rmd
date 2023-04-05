@@ -16,24 +16,26 @@ output:
 knitr::opts_chunk$set(echo = TRUE)
 library(tidyverse)
 library(leaflet)
+library(leaflegend)
 library(lubridate)
 library(plotly)
 library(caret)
 library(scales)
+library(brnn)
 ```
 
 ```{r}
 #read the data and create a new variable to be able to select annual timepoints while preserving the original timestamp
-eq <- read.csv("C:/Users/Samuel/OneDrive - West Chester University of PA/STA 610/R Examples/earthquakes.csv") %>% 
+eq <- read.csv("data/earthquakes.csv") %>% 
   mutate(timestamp = ymd_hms(time)) %>% 
   arrange(timestamp) %>% 
-  mutate(ts = round(timestamp, units = "year"))
+  mutate(year = year(timestamp))
 
 
 #subsets the data to include only the highest magnitude earthquake for each year (plus the most recent before the big one)
-yearly <- eq %>% group_by(ts) %>% 
+yearly <- eq %>% group_by(year) %>% 
   slice_max(mag) %>% 
-  distinct(mag,.keep_all = T) %>% 
+  distinct(year,.keep_all = T) %>% 
   rbind(eq[3158,]) %>% 
   arrange(timestamp)
 
@@ -45,6 +47,7 @@ The highest magnitude earthquake each year from 1965 - 2011
 
 ```{r}
 #Plot of the earthquakes
+
 leaflet(yearly) %>% 
   addTiles() %>% 
   addCircleMarkers(lng = ~longitude,
@@ -53,7 +56,8 @@ leaflet(yearly) %>%
                    stroke = F,
                    fillOpacity = .5,
                    color = ~ifelse(yearly$mag > 9, "darkred", "darkblue"),
-                   popup = ~as.character(paste0("<br><strong>Date and Time: </strong>", timestamp,
+                   popup = ~as.character(paste0(place, "<br>",
+                                                "<br><strong>Date and Time: </strong>", timestamp,
                                                 "<br><strong>Magnitude: </strong>", mag)
                                          )
   )
@@ -99,15 +103,263 @@ Relative to Magnitude
 ```{r}
 #---frequencies of each magnitude
 ggplot(gg, aes(x = mag, y = freqc)) +
-  geom_point(size = 4, shape = 17 )
+  geom_point(size = 4, shape = 17 ) +
+    labs(x = "Magnitude",
+       y = "Annual Frequency of At Least this Magnitude",
+       title = "Annual Earthquake Frequency near Tohoku, Japan" ) +
+  ylim(0,50)
   
 #---frequencies on the logistic scale
 ggplot(gg, aes(x = mag, y = freqc)) +
   geom_point(size = 4, shape = 17 ) +
-  scale_y_log10() +
-  scale_x_log10() +
+  scale_y_log10(limits = c(.001,100)) +
+  scale_x_log10(limits = c(4.5,10)) +
+  labs(x = "Magnitude",
+       y = "Annual Frequency of At Least this Magnitude",
+       title = "Annual Earthquake Frequency near Tohoku, Japan - Logarithmic Scale" ) +
   stat_smooth(method = lm,
-              formula = y ~ poly(x,1))
+              formula = y ~ poly(x,1),
+              fullrange = T)
   
 ```
+
+
+
+
+
+
+## Linear models of the data
+
+```{r}
+#---modeling---
+gg2 <- gg
+gg2$freqc <- log10(gg$freqc) #transforming to the log scale
+
+fitControl <- trainControl(method = "cv", number = 10)
+
+b <- train(freqc ~ poly(mag,1), data = gg2,
+      method = "lm",
+      preProc = c("center", "scale"),
+      trControl = fitControl)
+
+summary(b)
+
+p <- predict(b, newdata = data.frame(mag = 9.1))
+
+#new <- data.frame(mag = 9.1, freq = p, freqc = p) #new data point
+
+10^p #undo log transform for final result
+
+#linear model with no polynomial terms predicts 0.001271512 - one every 786 years or so
+#model with second order polynomial predicts 0.0001756346  - one every 5694 years or so.
+#model with third order polynomial predicts 4.045112e-05  - one every 24721 years or so.
+#model with fourh order polynomial predicts 2.049643e-05   - one every 48789 years or so.
+```
+
+
+
+
+### brnn method
+
+```{r include=FALSE}
+# https://cran.r-project.org/web/packages/brnn/brnn.pdf
+
+# What I am doing here is testing the model (on the logistic scale) using different variations of neurons to see what the predicted outcome for a 9.1 might be
+
+x <- gg2$mag
+y <- gg2$freqc
+t <- seq(from = 9, to = 10, length = 10)
+
+c <- brnn(y~x,neurons=10)
+
+ps <- predict(c, newdata = data.frame(x = t))
+ps <- 1/(10^ps)
+
+plot(t,ps)
+lines(t,ps,col="blue",lty=2)
+
+#6 neurons seems to hold well for a 9.1 when simulating 100 networks
+
+n <- 1:100
+w <- NULL
+for(i in 1:length(n)){
+  c <- brnn(y~x,neurons=6)
+  j <- predict(c, newdata = data.frame(x = 9.1))
+  w[i] <- 1/(10^j)
+}
+```
+
+Simulating 100 networks' predictions for magnitude 9.1 with *neurons = 9*
+```{r}
+#plot(n,w)
+summary(c)
+
+sim <- data.frame(n,w)
+
+plot_ly(data = sim, x = ~n, y = ~w)
+```
+
+Reviewing Regularization
+```{r}
+plot(x,y,
+     main="Bayesian Regularization for ANN 1-6-1")
+lines(x,predict(c),col="blue",lty=2)
+legend("topright",legend="Fitted model",col="blue",lty=2,bty="n")
+
+#using ggplot:
+
+ggplot(gg, aes(x = mag, y = freqc)) +
+  geom_point(size = 4, shape = 17 ) +
+  geom_line(aes(y = 10^predict(c)))
+```
+
+
+
+
+
+### caret method with method = brnn
+
+```{r include=FALSE}
+fitControl <- trainControl(method = "cv", number = 10)
+
+#use gg for original data, gg2 for log scale
+
+c <- train(freqc ~ mag, data = gg2,
+      method = "brnn",
+      preProc = c("center", "scale"),
+#      neurons = 2,
+      trControl = fitControl)
+
+#summary(c)
+
+p <- predict(c, newdata = data.frame(mag = 9.1))
+
+predicts <- add_row(gg2, mag = 9.1, freq = p, freqc = p)
+```
+
+Plot of the data with new predicted point at magnitude 9.1
+```{r}
+ggplot(predicts, aes(x = mag, y = freqc)) +
+  geom_point(size = 4, shape = 17 )
+```
+
+Preidicted frequency (in years) of a magnitude 9.1 earthquake
+```{r}
+1/(10^p)
+```
+
+
+
+
+
+## Modeling by train/test Split
+
+***(doesn't 10-fold CV do this already??)***
+
+side note - try and find in my code the way we were able to repeat lines, to expedite what I had done in the last code chunk.  Add it to ML notes.Rmd
+
+
+### Pre-processing
+
+```{r}
+#This is where I tinker around with caret and try to compare neural networks
+# - The trickiest part will be my shortage of data - perhaps this could be a great use for a BNN...lets hope...
+
+df <- eq[sample(nrow(eq)), ]  #shuffle the data
+df$mag <- round(df$mag,1)
+d <- count(df,mag)
+df <- full_join(df,d, copy = T)
+
+# ff <- data.frame(table(round(df$mag, 1)) ) %>%
+#   rename(mag = Var1,
+#          freq = Freq)
+
+
+train_test_split <- 0.7 * nrow(df)  #70% of data into our train set and the remaining 30% in our test set
+train <- df[1:train_test_split,]  #extracting first (shuffled) 70% of rows into a dataset
+test <- df[(train_test_split+1): nrow(df),] #extracting remaining (shuffled) 30% of rows into test datset
+
+#plots and numeric proportions of classes to assess for severe imbalance
+
+#for train:
+ggplot(train, aes(x = mag, fill = factor(mag))) +   #histogram of classes for train
+  geom_bar(aes(y = (..count..)/sum(..count..)))
+
+round(prop.table(table(train$mag)), 3)                       #table of classes for train
+
+#for test:
+ggplot(test, aes(x = mag, fill = factor(mag))) +    #histogram of classes for test
+  geom_bar(aes(y = (..count..)/sum(..count..)))
+
+round(prop.table(table(test$mag)), 3)                        #table of classes for test
+
+```
+
+### Modeling
+
+```{r}
+
+#compiling train and tets data into frequency datasets
+traingg <- distinct(train[,c(5,25)])
+testgg <- distinct(test[,c(5,25)])
+
+
+# #log transformation of the data
+# traingg$n <- log10(traingg$n)
+# testgg$n <- log10(testgg$n)
+# 
+# #undo log transform
+# traingg$n <- 10^(traingg$n)
+# testgg$n <- 10^(testgg$n)
+
+fitControl <- trainControl(method = "cv", number = 10)
+
+c <- train(n ~ mag, data = traingg,
+      method = "brnn",
+      preProc = c("center", "scale"),
+#      neurons = 2,
+      trControl = fitControl)
+
+#summary(c)
+
+#---predictions made on test data
+
+testpreds <- predict(c, newdata = data.frame(mag = testgg$mag))
+testpreds <- cbind(testgg,testpreds)
+
+ggplot(testpreds, aes(x = testpreds, y = n)) +
+  geom_point(size = 4, shape = 17) +
+      labs(x = "Predicted Observations",
+       y = "Actual Observations",
+       title = "Plot of Predicted vs. Actual observations in Test Data" )
+
+#---
+```
+
+
+
+
+
+
+<!--
+```{r eval=FALSE, include=FALSE}
+eq <- eq[c(3:3159),] #I only need the data up to that last point (for now) and only entire years up to then
+
+ggplot(eq, aes(x = mag)) +
+  geom_point(stat = "count", size = 4, shape = 17 ) + 
+  scale_x_binned(nice.breaks = T,
+                 n.breaks = 30)
+
+# dd <- data.frame(cut(eq$mag, breaks = seq(from=1, to=9, by = .1) ) %>% 
+#                    table)
+# dd <- dd[c(35:80),]
+
+ggplot(eq, aes(x = mag)) +
+  geom_point(stat = "count", size = 4, shape = 17 ) + 
+  scale_x_binned(nice.breaks = T,
+                 n.breaks = 30) +
+  scale_y_continuous(trans = 'log10')
+
+```
+-->
 
