@@ -1,10 +1,9 @@
 ---
 title: "Earthquakes"
 author: "Samuel Richards"
-date: "2023-03-22"
 output:
-  # pdf_document:
-  #   keep_tex: TRUE
+  pdf_document:
+    keep_tex: TRUE
   html_document:
     toc: yes
     toc_float: yes
@@ -22,21 +21,33 @@ library(plotly)
 library(caret)
 library(scales)
 library(brnn)
+library(neuralnet)
+library(RSNNS)
 ```
+
+Data was queried using USGS Earthquake Catalog: https://earthquake.usgs.gov/earthquakes/search/ to select all recorded earthquakes of magnitude 4.5 and above with the following query parameters:
+
+- latitude 35.4 - 41.2
+- longitude 137.5 - 145.2
+- Timeframe(UTC): 2011-03-11 00:00:00 - 1965-01-01 00:00:00
+
+The data was stored locally in a .csv file named `earthquakes`.
+
+The organization also has an package called `rcomcat` to query data directly into `R`, but its version was not compatible at the time of this thesis.
 
 ```{r}
 #read the data and create a new variable to be able to select annual timepoints while preserving the original timestamp
-eq <- read.csv("data/earthquakes.csv") %>% 
+earthquakes_full <- read.csv("data/earthquakes.csv") %>% 
   mutate(timestamp = ymd_hms(time)) %>% 
   arrange(timestamp) %>% 
   mutate(year = year(timestamp))
 
 
 #subsets the data to include only the highest magnitude earthquake for each year (plus the most recent before the big one)
-yearly <- eq %>% group_by(year) %>% 
+yearly <- earthquakes_full %>% group_by(year) %>% 
   slice_max(mag) %>% 
   distinct(year,.keep_all = T) %>% 
-  rbind(eq[3158,]) %>% 
+  rbind(earthquakes_full[3158,]) %>% 
   arrange(timestamp)
 
 ```
@@ -45,7 +56,7 @@ yearly <- eq %>% group_by(year) %>%
 
 The highest magnitude earthquake each year from 1965 - 2011
 
-```{r}
+```{r eval=FALSE, include=FALSE}
 #Plot of the earthquakes
 
 leaflet(yearly) %>% 
@@ -67,51 +78,59 @@ leaflet(yearly) %>%
 ## Data Preprocessing
 
 ```{r}
-eq <- eq[c(3:3159),] #I only need the data up to that last point (for now) and only entire years up to then
+#Subset data to include observations from January 1, 1965 to the Greak Quake of March 11, 2011
+earthquakes_subset <- earthquakes_full[which(earthquakes_full$time >= "1965-01-26T23:47:37.120Z" &                                                       earthquakes_full$time <= "2011-03-11T05:46:24.120Z"),]
 
 #If I want to subset by the same geographic area as the book
 #eq <- eq[which(eq$latitude > 37.72 & eq$latitude < 38.82 & eq$longitude > 141.87 & eq$longitude < 142.87),]
 
-#Fine-tuning the geographic area os the model...
-eq <- eq[which(eq$latitude > 35.72 & eq$latitude < 40.82 & eq$longitude > 139.37 & eq$longitude < 143.37),]
+#Fine-tuning the geographic area of the model...
+earthquakes_subset <- earthquakes_subset[which(earthquakes_subset$latitude > 35.72 &
+                                               earthquakes_subset$latitude < 40.82 &
+                                               earthquakes_subset$longitude > 139.37 &
+                                               earthquakes_subset$longitude < 143.37),]
 
-eq <- eq[-as.numeric(count(eq)),] #to omit the 9.1
+earthquakes_subset <- earthquakes_subset[-as.numeric(count(earthquakes_subset)),] #to omit the 9.1
 
 #---data frame of magnitudes (rounded to .1) and relative frequencies
-gg <- data.frame(table(round(eq$mag, 1)) ) %>% 
-  rename(mag = Var1,
-         freq = Freq)
+eq <- data.frame(table(round(earthquakes_subset$mag, 1)) ) %>% 
+      rename(mag = Var1,
+      freq = Freq)
 
-gg$mag <- as.numeric(as.character(gg$mag)) #change to numeric rather than factors
+eq$mag <- as.numeric(as.character(eq$mag)) #change to numeric rather than factors
 
-
-
-gg$freq <- gg$freq/(2011-1965) #AVERAGE annual frequencies over the 46-year span
+eq$freq <- eq$freq/(2011-1965) #AVERAGE annual frequencies over the 46-year span
 
 
 #creates a new variable representing the frequency of earthquakes of AT LEAST that magnitude
-for(i in 1:as.numeric(count(gg))){
-  gg$freqc[i] <- sum( gg$freq[c(i:as.numeric(count(gg)))] )
+for(i in 1:as.numeric(count(eq))){
+  eq$freqc[i] <- sum( eq$freq[c(i:as.numeric(count(eq)))] )
 }
 
+eq_log <- eq %>% mutate(freqc = log10(freqc)) #transforming to the log scale
+
+# earthquakes <- gg
+# earthquakes_log <- earthquakes %>% mutate(freqc = log10(freqc)) #transforming to the log scale
 ```
 
 
 ## Frequency of Earthquakes
 Relative to Magnitude
 
-```{r}
+```{r eval=FALSE, include=FALSE}
 #---frequencies of each magnitude
-ggplot(gg, aes(x = mag, y = freqc)) +
+ggplot(eq, aes(x = mag, y = freqc)) +
   geom_point(size = 4, shape = 17 ) +
+    theme_minimal() +
     labs(x = "Magnitude",
        y = "Annual Frequency of At Least this Magnitude",
        title = "Annual Earthquake Frequency near Tohoku, Japan" ) +
   ylim(0,50)
   
-#---frequencies on the logistic scale
-ggplot(gg, aes(x = mag, y = freqc)) +
+#---frequencies on the logarithmic scale
+ggplot(eq, aes(x = mag, y = freqc)) +
   geom_point(size = 4, shape = 17 ) +
+  theme_minimal() +
   scale_y_log10(limits = c(.001,100)) +
   scale_x_log10(limits = c(4.5,10)) +
   labs(x = "Magnitude",
@@ -120,66 +139,343 @@ ggplot(gg, aes(x = mag, y = freqc)) +
   stat_smooth(method = lm,
               formula = y ~ poly(x,1),
               fullrange = T)
-  
+
+#---frequencies on the logarithmic scale, 2nd order polynomial
+ggplot(eq, aes(x = mag, y = freqc)) +
+  geom_point(size = 4, shape = 17 ) +
+  theme_minimal() +
+  scale_y_log10(limits = c(.001,100)) +
+  scale_x_log10(limits = c(4.5,10)) +
+  labs(x = "Magnitude",
+       y = "Annual Frequency of At Least this Magnitude",
+       title = "Annual Earthquake Frequency near Tohoku, Japan - Logarithmic Scale",
+       subtitle = "Linear Model with Second Order Polynomial") +
+  stat_smooth(method = lm,
+              formula = y ~ poly(x,2),
+              fullrange = T)
 ```
-
-
-
-
 
 
 ## Linear models of the data
 
-```{r}
+Calculation of the fit lines above.  
+
+```{r eval=FALSE, include=FALSE}
 #---modeling---
-gg2 <- gg
-gg2$freqc <- log10(gg$freqc) #transforming to the log scale
+linear <- lm(data = eq_log, formula = freqc ~ mag)
 
-fitControl <- trainControl(method = "cv", number = 10)
+# RESEARCH --- why does the model summary change when I write it this way, but not the prediction?
+#linear <- lm(data = eq_log, formula = freqc ~ poly(mag,1))
 
-b <- train(freqc ~ poly(mag,1), data = gg2,
-      method = "lm",
-      preProc = c("center", "scale"),
-      trControl = fitControl)
+summary(linear)
+p <- predict(linear, newdata = data.frame(mag = 9.1))
 
-summary(b)
+1/10^p #undo log transform for final result
+```
+For completeness, this model shows that on average, for every 1.0 increase in magnitude, the lapsed time between earthquakes of *at least* that magnitude is expected to increase by $1/10^{-1.01971}$ = `r 1/10^-1.01971` years.
 
-p <- predict(b, newdata = data.frame(mag = 9.1))
+For a magnitude 9.1 earthquake, the expected frequency would be one every $1/10^{6.38365-1.01971(9.1)}$ = `1/10^p` years.
 
-#new <- data.frame(mag = 9.1, freq = p, freqc = p) #new data point
 
-10^p #undo log transform for final result
+### Data table of polynomial orders and respective predictions:
+```{r eval=FALSE, include=FALSE}
+capacity <- 1:8
+prediction <- NULL
 
-#linear model with no polynomial terms predicts 0.001271512 - one every 786 years or so
-#model with second order polynomial predicts 0.0001756346  - one every 5694 years or so.
-#model with third order polynomial predicts 4.045112e-05  - one every 24721 years or so.
-#model with fourh order polynomial predicts 2.049643e-05   - one every 48789 years or so.
+for(i in capacity){
+  lm <- lm(data = eq_log, formula = freqc ~ poly(mag,i))
+  p <- predict(lm, newdata = data.frame(mag = 9.1))
+  prediction[i] <- 1/10^p
+}
+data.frame(capacity,prediction)
 ```
 
 
 
 
-### brnn method
+## mlp
 
-```{r include=FALSE}
-# https://cran.r-project.org/web/packages/brnn/brnn.pdf
+write mlp description stuff here...
 
-# What I am doing here is testing the model (on the logistic scale) using different variations of neurons to see what the predicted outcome for a 9.1 might be
+```{r eval=FALSE, include=FALSE}
+set.seed(4723)
 
-x <- gg2$mag
-y <- gg2$freqc
-t <- seq(from = 9, to = 10, length = 10)
+#shuffle the data
+df <- eq_log[sample(nrow(eq_log)), ]
 
-c <- brnn(y~x,neurons=10)
+#Extract 70% of data into train set and the remaining 30% in test set
+train_test_split <- 0.7 * nrow(df)
+train <- df[1:train_test_split,]
+test <- df[(train_test_split+1): nrow(df),]
 
-ps <- predict(c, newdata = data.frame(x = t))
-ps <- 1/(10^ps)
+mlp <- neuralnet(freqc ~ mag,
+                 stepmax = 1e+06,
+                 data = train,
+                 hidden = c(5,5))
 
-plot(t,ps)
-lines(t,ps,col="blue",lty=2)
+#prediction for magnitude 9.1
+p <- predict(mlp, newdata = data.frame(mag = 9.1))
+1/10^p
+```
 
-#6 neurons seems to hold well for a 9.1 when simulating 100 networks
+Using this neural network model, the expected frequency of a magnitude 9.1 earthquake would be one every `1/10^p` years.
 
+
+### plots for mlp
+
+```{r eval=FALSE, include=FALSE}
+
+#---actual test data---
+actual_log_mlp <- eq_log %>% 
+  mutate(type = "actual")
+#  add_row(mag = addt, freqc = NA, type = "actual")
+
+#---predicted data---
+mdp <- seq(8,9.1, by = .1) #additional magnitude data points to add to prediction data
+
+mlp_preds <- eq_log$mag %>% append(mdp) #append additional magnitudes to make predictions
+
+predicted_log_mlp <- data.frame(mag = mlp_preds,
+                               freqc = predict(mlp, newdata = data.frame(mag = mlp_preds)),
+                               type = "predicted")
+
+#---combine test and predictions for plot---
+mlp_plot <- rbind(predicted_log_mlp,actual_log_mlp[,c(1,3,4)])
+
+#---generate plot---
+ggplot(mlp_plot, aes(x = mag, y = freqc, group = type, color = type)) +
+  geom_line() +
+  geom_point(size = 2, shape = 17 ) +
+  theme_minimal() +
+  labs(x = "Magnitude",
+       y = "Annual Frequency of At Least this Magnitude",
+       title = "Annual Earthquake Frequency near Tohoku, Japan - Logarithmic Scale",
+       subtitle = "Three-Layer Neural Network")
+
+
+#---generate plot returned to the STANDARD SCALE---
+ggplot(mlp_plot, aes(x = mag, y = 10^freqc, group = type, color = type)) +
+  geom_line() +
+  geom_point(size = 2, shape = 17 ) +
+  theme_minimal() +
+  labs(x = "Magnitude",
+       y = "Annual Frequency of At Least this Magnitude",
+       title = "Annual Earthquake Frequency near Tohoku, Japan - Logarithmic Scale",
+       subtitle = "Three-Layer Neural Network")
+```
+
+
+<!---   Return here with name change and code cleaning stuff after implementing the above  in Shiny  --->
+
+
+
+
+### testing capacity levels and MSE measurements
+```{r eval=FALSE, include=FALSE}
+set.seed(4723)
+#---one hidden layer---
+mlp <- neuralnet(freqc ~ mag,
+                 stepmax = 1e+06,
+                 data = train,
+                 hidden = c(5))
+
+#predictions on test data
+pps <- predict(mlp, newdata = data.frame(mag = test$mag))
+
+#SSE to get test error
+TestErr1 <- sum((pps - test$freqc)^2)
+TrainErr1 <- mlp$result.matrix[1,]
+
+set.seed(4723)
+#---two hidden layers---
+mlp <- neuralnet(freqc ~ mag,
+                 stepmax = 1e+06,
+                 data = train,
+                 hidden = c(5,5))
+
+#predictions on test data
+pps <- predict(mlp, newdata = data.frame(mag = test$mag))
+
+#SSE to get test error
+TestErr2 <- sum((pps - test$freqc)^2)
+TrainErr2 <- mlp$result.matrix[1,]
+
+set.seed(4723)
+#---three hidden layers---
+mlp <- neuralnet(freqc ~ mag,
+                 stepmax = 1e+06,
+                 data = train,
+                 hidden = c(5,5,5))
+
+#predictions on test data
+pps <- predict(mlp, newdata = data.frame(mag = test$mag))
+
+#MSE to get test error
+TestErr3 <- sum((pps - test$freqc)^2)
+TrainErr3 <- mlp$result.matrix[1,]
+
+#View results
+TestError <- cbind(TestErr1,TestErr2,TestErr3)[1:3]
+TrainError <- cbind(TrainErr1, TrainErr2, TrainErr3)[1:3]
+GeneralizationGap <- TrainError - TestError
+
+data.frame(rbind(TestError,TrainError,GeneralizationGap))
+```
+
+
+
+
+## brnn method
+
+6-layer neural network that utilizes Bayesian Regularization
+
+predictions for a magnitude 9.1 earthquake
+
+### Building the Network
+```{r}
+x <- earthquakes_log$mag
+y <- earthquakes_log$freqc
+
+brnn <- brnn(y~x,neurons=6)                       # build model
+summary(brnn)                                     # summary of model
+
+#---return interval of years based on 9.1 prediction
+b <- predict(brnn, newdata = data.frame(x = 9.1))
+1/(10^b)
+```
+
+Using this neural network model, the expected frequency of a magnitude 9.1 earthquake would be one every `1/10^b` years.
+
+
+### plots for brnn
+
+```{r}
+
+#---actual test data---
+actual_log_brnn <- earthquakes_log %>% 
+  mutate(type = "actual")
+ # add_row(mag = addt, freqc = NA, type = "actual")
+
+#---predicted data---
+mdp <- seq(8,9.1, by = .1) #additional magnitude data points to add to prediction data
+
+bnn_preds <- earthquakes_log$mag %>% append(mdp) #append additional magnitudes to make predictions
+
+predicted_log_brnn <- data.frame(mag = bnn_preds,
+                             freqc = predict(brnn, newdata = data.frame(x = bnn_preds)),
+                             type = "predicted")
+
+
+#---combine test and predictions for plot---
+brnn_plot <- rbind(predicted_log_brnn,actual_log_brnn[,c(1,3,4)])
+
+#---generate plot---
+ggplot(brnn_plot, aes(x = mag, y = freqc, group = type, color = type)) +
+  geom_line() +
+  geom_point(size = 2, shape = 17 , alpha = .5) +
+  theme_minimal() +
+  labs(x = "Magnitude",
+       y = "Annual Frequency of At Least this Magnitude",
+       title = "Annual Earthquake Frequency near Tohoku, Japan - Logarithmic Scale",
+       subtitle = "Three-Layer Neural Network with Bayesian Regularization")
+```
+
+Simulating 100 networks' predictions for relative magnitudes with *neurons = 6*
+```{r}
+n <- 1:1000
+w <- NULL
+f <- NULL
+ddf <- actual_log_brnn[,c(1,3,4)] %>% mutate(iteration = 0)
+for(i in 1:length(n)){
+  c <- brnn(y~x,neurons=6)
+predicted_log_brnn <- data.frame(mag = bnn_preds,
+                             freqc = predict(c, newdata = data.frame(x = bnn_preds)),
+                             type = "predicted",
+                             iteration = i)
+f[[i]] <- predicted_log_brnn
+ddf <- add_row(ddf,f[[i]])
+}
+
+ggplot(ddf, aes(x = mag, y = freqc, group = iteration, shape = type, alpha = type, color = type)) +
+  geom_line(show.legend = T) +
+  geom_point(aes(size = type), shape = 17) +
+  theme_minimal() +
+  labs(x = "Magnitude",
+       y = "Annual Frequency of At Least this Magnitude",
+       title = "Annual Earthquake Frequency near Tohoku, Japan - Logarithmic Scale",
+       subtitle = "Three-Layer Neural Network with Bayesian Regularization") +
+  scale_alpha_discrete(range = c(1, .25)) +
+  scale_size_discrete(range = c(2,1))
+
+#subset all observations for a 9.1
+ddf_9.1 <- ddf[which(ddf$mag == 9.1),]
+
+ddf_9.1 <- ddf_9.1[which(ddf_9.1$freqc > -2.6),] #to remove the outlier
+
+ggplot(ddf_9.1, aes(x = iteration, y = 1/10^(freqc))) +
+geom_point(size = 2, shape = 16, color = "cyan4") + 
+    labs(x = "Iteration",
+         y = "Predicted Lapsed Time (Years) Between Occurrences",
+         title = "Predictions for a Magnitude 9.1 Earthquake",
+         subtitle = "Three-Layer Neural Network with Bayesian Regularization") +
+  theme_minimal()
+
+
+ggplot(ddf_9.1, aes(sample = 1/10^(freqc))) +
+geom_qq() + 
+    labs(x = "Iteration",
+         y = "Predicted Lapsed Time (Years) Between Occurrences",
+         title = "Predictions for a Magnitude 9.1 Earthquake",
+         subtitle = "Three-Layer Neural Network with Bayesian Regularization") +
+  theme_minimal()
+
+#This, I believe, may just be the approximate posterior predictve distribution for a magnitude 9.1
+ggplot(ddf_9.1, aes(x = 1/10^(freqc))) +
+geom_density() + 
+    labs(x = "Predicted Lapsed Time (Years) Between Occurrences",
+         y = "Density",
+         title = "Approximate Posterior Predictive Density",
+         subtitle = "Three-Layer Neural Network with Bayesian Regularization") +
+  theme_minimal()
+```
+
+
+Use this for the shiny app
+```{r}
+
+#distribution of the data for 9.1 - transformed to represent predicted lapsed time between occurrences
+plot_ly(data = ddf_9.1, x = ~iteration, y = ~1/10^(freqc)) %>% 
+layout(title = 'Predictions for a Magnitude 9.1 Earthquake',
+   #    plot_bgcolor = "#e5ecf6",
+       xaxis = list(title = 'Iteration'),
+       yaxis = list(title = 'Predicted Lapsed Time Between Occurrences'))
+```
+
+
+### plot for brnn returned to standard scale
+```{r eval=FALSE, include=FALSE}
+brnn_plot2 <- brnn_plot %>% 
+  mutate(freqc = 10^freqc)
+
+ggplot(brnn_plot2, aes(x = mag, y = freqc, group = type, color = type)) +
+  geom_line() +
+  geom_point(size = 2, shape = 17, alpha = .5) +
+  theme_minimal() +
+  labs(x = "Magnitude",
+       y = "Annual Frequency of At Least this Magnitude",
+       title = "Annual Earthquake Frequency near Tohoku, Japan - Standard Scale",
+       subtitle = "Three-Layer Neural Network with Bayesian Regularization")
+```
+
+
+
+
+
+
+
+
+Simulating 100 networks' predictions for magnitude 9.1 with *neurons = 6*
+```{r eval=FALSE, include=FALSE}
 n <- 1:100
 w <- NULL
 for(i in 1:length(n)){
@@ -187,20 +483,26 @@ for(i in 1:length(n)){
   j <- predict(c, newdata = data.frame(x = 9.1))
   w[i] <- 1/(10^j)
 }
-```
-
-Simulating 100 networks' predictions for magnitude 9.1 with *neurons = 9*
-```{r}
-#plot(n,w)
-summary(c)
 
 sim <- data.frame(n,w)
 
 plot_ly(data = sim, x = ~n, y = ~w)
 ```
 
+
+
+
+
+
+
+
+
+
+
+
+<!--
 Reviewing Regularization
-```{r}
+```{r eval=FALSE, include=FALSE}
 plot(x,y,
      main="Bayesian Regularization for ANN 1-6-1")
 lines(x,predict(c),col="blue",lty=2)
@@ -214,12 +516,41 @@ ggplot(gg, aes(x = mag, y = freqc)) +
 ```
 
 
+```{r eval=FALSE, include=FALSE}
+# https://cran.r-project.org/web/packages/brnn/brnn.pdf
+
+# What I am doing here is testing the model (on the logistic scale) using different variations of neurons to see what the predicted outcome for a 9.1 might be
+
+x <- earthquakes_log$mag
+y <- earthquakes_log$freqc
+t <- seq(from = 9, to = 10, length = 10)
+
+c <- brnn(y~x,neurons=10)
+
+ps <- predict(c, newdata = data.frame(x = t))
+ps <- 1/(10^ps)
+
+# plot(t,ps)
+# lines(t,ps,col="blue",lty=2)
+
+#6 neurons seems to hold well for a 9.1 when simulating 100 networks
+
+n <- 1:100
+w <- NULL
+for(i in 1:length(n)){
+  c <- brnn(y~x,neurons=6)
+  j <- predict(c, newdata = data.frame(x = 9.1))
+  w[i] <- 1/(10^j)
+}
+```
+-->
 
 
+<!--
 
 ### caret method with method = brnn
 
-```{r include=FALSE}
+```{r eval=FALSE, include=FALSE}
 fitControl <- trainControl(method = "cv", number = 10)
 
 #use gg for original data, gg2 for log scale
@@ -238,13 +569,13 @@ predicts <- add_row(gg2, mag = 9.1, freq = p, freqc = p)
 ```
 
 Plot of the data with new predicted point at magnitude 9.1
-```{r}
+```{r eval=FALSE, include=FALSE}
 ggplot(predicts, aes(x = mag, y = freqc)) +
   geom_point(size = 4, shape = 17 )
 ```
 
 Preidicted frequency (in years) of a magnitude 9.1 earthquake
-```{r}
+```{r eval=FALSE, include=FALSE}
 1/(10^p)
 ```
 
@@ -252,96 +583,6 @@ Preidicted frequency (in years) of a magnitude 9.1 earthquake
 
 
 
-## Modeling by train/test Split
-
-***(doesn't 10-fold CV do this already??)***
-
-side note - try and find in my code the way we were able to repeat lines, to expedite what I had done in the last code chunk.  Add it to ML notes.Rmd
-
-
-### Pre-processing
-
-```{r}
-#This is where I tinker around with caret and try to compare neural networks
-# - The trickiest part will be my shortage of data - perhaps this could be a great use for a BNN...lets hope...
-
-df <- eq[sample(nrow(eq)), ]  #shuffle the data
-df$mag <- round(df$mag,1)
-d <- count(df,mag)
-df <- full_join(df,d, copy = T)
-
-# ff <- data.frame(table(round(df$mag, 1)) ) %>%
-#   rename(mag = Var1,
-#          freq = Freq)
-
-
-train_test_split <- 0.7 * nrow(df)  #70% of data into our train set and the remaining 30% in our test set
-train <- df[1:train_test_split,]  #extracting first (shuffled) 70% of rows into a dataset
-test <- df[(train_test_split+1): nrow(df),] #extracting remaining (shuffled) 30% of rows into test datset
-
-#plots and numeric proportions of classes to assess for severe imbalance
-
-#for train:
-ggplot(train, aes(x = mag, fill = factor(mag))) +   #histogram of classes for train
-  geom_bar(aes(y = (..count..)/sum(..count..)))
-
-round(prop.table(table(train$mag)), 3)                       #table of classes for train
-
-#for test:
-ggplot(test, aes(x = mag, fill = factor(mag))) +    #histogram of classes for test
-  geom_bar(aes(y = (..count..)/sum(..count..)))
-
-round(prop.table(table(test$mag)), 3)                        #table of classes for test
-
-```
-
-### Modeling
-
-```{r}
-
-#compiling train and tets data into frequency datasets
-traingg <- distinct(train[,c(5,25)])
-testgg <- distinct(test[,c(5,25)])
-
-
-# #log transformation of the data
-# traingg$n <- log10(traingg$n)
-# testgg$n <- log10(testgg$n)
-# 
-# #undo log transform
-# traingg$n <- 10^(traingg$n)
-# testgg$n <- 10^(testgg$n)
-
-fitControl <- trainControl(method = "cv", number = 10)
-
-c <- train(n ~ mag, data = traingg,
-      method = "brnn",
-      preProc = c("center", "scale"),
-#      neurons = 2,
-      trControl = fitControl)
-
-#summary(c)
-
-#---predictions made on test data
-
-testpreds <- predict(c, newdata = data.frame(mag = testgg$mag))
-testpreds <- cbind(testgg,testpreds)
-
-ggplot(testpreds, aes(x = testpreds, y = n)) +
-  geom_point(size = 4, shape = 17) +
-      labs(x = "Predicted Observations",
-       y = "Actual Observations",
-       title = "Plot of Predicted vs. Actual observations in Test Data" )
-
-#---
-```
-
-
-
-
-
-
-<!--
 ```{r eval=FALSE, include=FALSE}
 eq <- eq[c(3:3159),] #I only need the data up to that last point (for now) and only entire years up to then
 

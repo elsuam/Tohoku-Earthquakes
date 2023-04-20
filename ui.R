@@ -20,7 +20,8 @@ sidebarPanel(
                    
     h2("Frequency Plots"),
   
-    helpText("Use this panel to view features and make predictions."),
+    helpText("The relative frequency of each size earthquake is displayed.
+             Use this panel to view features and make predictions using linear models."),
 
               radioButtons("scale", label = h4("Select Scale"),
                           choices = list("Standard" = 1, "Logarithmic" = 2), 
@@ -29,8 +30,28 @@ sidebarPanel(
               sliderInput("capacity", label = h4("Adjust Capacity"), min = 0, 
                          max = 10, value = 0)
   ),
+   
+  conditionalPanel(condition = "input.tabs == 'MLP Neural Network'",
+                  
+    h2("Multi-Layer Perceptron"),
+                  
+    helpText("This panel features a three-layer Multi-Laper Perceptron (MLP) neural network.  Adjust the
+             model capacity by setting the layer sizes using the sliders below."),
+                  
+#    checkboxInput("nntoggle", label = "Display Predictions", value = F),
+    
+    sliderInput("mlpneurons1", label = h4("Neurons in the First Hidden Layer"), min = 1, 
+                max = 8, value = 1),
+    sliderInput("mlpneurons2", label = h4("Neurons in the Second Hidden Layer"), min = 1, 
+                max = 8, value = 1),
+
+    helpText("The table to the right displays the training error, test error, gap between, and the
+             expected lapsed time between occurrences of a magnitude 9.1 earthquake, based on this model.
+             Minimizing the generalization gap may be a good choice for this prediction.")
+
+  ),
   
-  conditionalPanel(condition = "input.tabs == 'Neural Network'",
+  conditionalPanel(condition = "input.tabs == 'Bayesian Neural Network'",
                    
     h2("Neural Network"),
                    
@@ -42,6 +63,8 @@ sidebarPanel(
  #   checkboxInput("netline", label = "Display Regularization"),
 
   )
+
+ 
 ),
       
 mainPanel(
@@ -72,12 +95,19 @@ mainPanel(
                                     ),
                                   ),
                                   
-                         tabPanel("Neural Network", plotlyOutput("neuralnets", height = 500, width = "80%"),
+                         tabPanel("MLP Neural Network", plotlyOutput("mlp", height = 500, width = "80%"),
 
-                                                    # textOutput("nets"),
-                                                    h4("Table of network weights and biases"),
-                                                    tableOutput("netinfo"),
+                                                    tableOutput("testerr"),
+                                                    # h4("Table of network weights and biases"),
+                                                    # tableOutput("netinfo"),
                                   ),
+                         
+                         tabPanel("Bayesian Neural Network", plotlyOutput("brnn", height = 500, width = "80%"),
+                                  
+                                  # textOutput("nets"),
+                                  # h4("Table of network weights and biases"),
+                                  # tableOutput("netinfo"),
+                         ),
                         # tabPanel("Table", tableOutput("table"))
              ),
 
