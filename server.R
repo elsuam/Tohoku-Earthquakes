@@ -70,8 +70,8 @@ splot <- ggplot(eq, aes(x = mag, y = freqc, group = 1, text = paste("Magnitude "
           labs(x = "Magnitude",
               y = "Annual Frequency of At Least this Magnitude",
               title = "Annual Earthquake Frequency near Tohoku, Japan" ) +
-              ylim(-5,50) +
-              xlim(4.5,9.2) +
+          ylim(-5,50) +
+          xlim(4.5,9.2) +
           theme_minimal() +
           theme(plot.title = element_text(hjust = 0.5))
           tooltip = c("text", "num")
@@ -157,9 +157,10 @@ lplot <- ggplot(eq, aes(x = mag, y = freqc, group = 1, text = paste("Magnitude "
   mlp <- reactive({
     set.seed(4723)
     neuralnet(freqc ~ mag,
-                              stepmax = 1e+06,
-                              data = train,
-                              hidden = c(mlpneurons1(),mlpneurons2()))    })
+    stepmax = 1e+06,
+    data = train,
+    hidden = c(mlpneurons1(),mlpneurons2()))
+    })
   
 #--- make predictions based on model ---
   mlp_react <- reactive({
@@ -185,22 +186,41 @@ lplot <- ggplot(eq, aes(x = mag, y = freqc, group = 1, text = paste("Magnitude "
            subtitle = "Three-Layer Neural Network")
     
   })
-  
+
+  #--- predictions made from the log scale then undo transform
   testpreds <- reactive({
-    predict(mlp(), newdata = data.frame(mag = test$mag))
+    10^predict(mlp(), newdata = data.frame(mag = test$mag)) 
   })
   
   
   # Table below the plot displaying training error, test error, generalization gap
+  #-NOTES:-
+  #-Training error is based on the neuralnets package
+  #-Test error is MSE of predicted vs actual test values, BOTH coerced back to standard scale before calculation
   output$testerr <- renderTable(
     
-    expr = data.frame(TrainError = mlp()[["result.matrix"]][1],
-                      TestError = sum((testpreds() - test$freqc)^2),
-                      GeneralizationGap = mlp()[["result.matrix"]][1] - sum((testpreds() - test$freqc)^2),
+    expr = data.frame(TrainError = mlp()$result.matrix[1,],
+                      TestError = mean((testpreds() - 10^test$freqc)^2), #--- MSE Test Error
+                      GeneralizationGap = mean((testpreds() - 10^test$freqc)^2) - mlp()$result.matrix[1,],
                       Prediction_9.1 = 1/10^predict(mlp(), newdata = data.frame(mag = 9.1)) ),
     digits = 8
     
   )
+  
+  #--- Output for the neuralnets diagram ---
+  output$mlpplot <- renderPlot({
+    
+ #   dev.off()
+    
+    plot(mlp(), rep = "best", show.weights = F, information = FALSE, radius = 0.25, fontsize = 0, intercept.factor = .4,
+         col.entry = "coral4",
+         col.entry.synapse = "white",
+         col.hidden = "coral4",
+         col.hidden.synapse = "cornsilk4",
+         col.out = "coral4",
+         col.out.synapse = "white",
+         col.intercept = "darkcyan")
+  })
 
 
   
